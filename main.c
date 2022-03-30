@@ -11,11 +11,25 @@
 #include <avr/interrupt.h>
 #include <avr/sleep.h>
 
+/* PID control */
+#define KP 1.0
+#define KD 0.5
+#define KI 0.2
+#define DT 1.0
+#define A0 KP + KI*DT + KD/DT
+#define A1 -KP - 2*KD/DT
+#define A2 KD/DT
 
+/* PWM prescaler values */
 #define PRESCALE_0 (1<<CS20)
 #define PRESCALE_64 (1<<CS22)
 #define PRESCALE_1024 (1<<CS22) | (1<<CS21) | (1<<CS20)
 
+/* ADC channels */
+#define ADC_POT 6
+#define ADC_TEMP 7
+
+#define ADC_MAX 1023	/* 10 bit maximum value */
 
 volatile uint8_t switch_power_off = 0;
 volatile uint8_t switch_temp_ext = 0;
@@ -23,15 +37,20 @@ volatile uint8_t switch_temp_ext = 0;
 void setup();
 void power_down();
 void wake_up();
-void set_temp(uint8_t percent);
+int8_t set_temp(uint8_t ref, uint8_t temp);
+void read_ad(uint8_t channel, uint8_t *ad_result);
+void set_led(int8_t state);
 
 int main(void)
 {
-    setup();
-	/* TODO: Initialize PWM counter */
+    uint8_t temp_ref = 0;
+	uint8_t temp = 0;
+	int8_t led_status = 0;
+
+	setup();
 	/* TODO: LED IO */
 	/* TODO: Console USART */
-	/* TODO: ADC */
+	
 	
     while (1) 
     {
@@ -39,10 +58,11 @@ int main(void)
 		if (switch_power_off)
 			power_down();
 		
-		/* TODO: Update reference temp if necessary */
-		/* TODO: Measure the temperature */
-		/* TODO: Update the PWM for heating element */
-		/* TODO: Update the LED state */
+		read_ad(ADC_POT, &temp_ref);	/* Read reference temperature */
+		read_ad(ADC_TEMP, &temp);		/* Read measured temperature */
+		
+		led_status = set_temp(temp_ref, temp);
+		set_led(led_status);
     }
 }
 
@@ -53,6 +73,7 @@ void setup()
 	PRR |= (1<<PRTIM2);		/* Shut down Timer/Counter2 */
 	PRR |= (1<<PRTIM1);		/* Shut down Timer/Counter1 */
 	PRR |= (1<<PRTIM0);		/* Shut down Timer/Counter0 */
+	PRR &= ~(1<<PRADC);		/* Enable ADC */
 	
 	/* External interrupt for switches setup */
 	sei();
@@ -60,19 +81,51 @@ void setup()
 	PCMSK2 |= (1<<PCINT23) | (1<<PCINT22);	/* Enable interrupt for the pins */
 	
 	/* Timer/Counter0 PWM setup */
-	DDRD |= (1<<PIND3);								/* Set PD3/OC2B pin as an output */
-	TCCR2A |= (1<<COM2B1) | (1<<WGM20);				/* Set output modes */
-	TCCR2B |= PRESCALE_0;	/* Set 1024 prescaler (1<<CS22) | (1<<CS21) | */
-	set_temp(50);
+	DDRD |= (1<<PIND3);						/* Set PD3/OC2B pin as an output */
+	TCCR2A |= (1<<COM2B1) | (1<<WGM20);		/* Set output modes */
+	TCCR2B |= PRESCALE_0;					/* Set the prescaler */
+	
+	/* ADC for potentiometer setup */
+	ADCSRA |= 0x07;							/* Prescaler to 128 */
+	ADCSRA |= (1<<ADEN);					/* Enable the conversion */
+}
+
+/** 
+ * Read ADC channel, blocks while the conversion completes. 
+ * channel: ADC_POT or ADC_TEMP to select the channel.
+ * ad_result: ADC result as 0-100 % of the full range of conversion.
+ */
+void read_ad(uint8_t channel, uint8_t *ad_result)
+{
+	uint16_t result;
+	ADMUX = (ADMUX & 0x0F) | channel;	/* Select the channel */
+	ADCSRA |= (1<<ADSC);				/* Start conversion */
+	while (ADCSRA & (1<<ADSC));			/* Wait for conversion to complete */
+	result = ADCL;						/* Read bits 7:0 */
+	result += (uint16_t)ADCH << 8;		/* Read bits 9:8 */
+	*ad_result = 100 * result / ADC_MAX;	/* Scale the result to percentage */
 }
 
 /** Set the reference temperature for the heating element as 0-100% */
-void set_temp(uint8_t percent)
+int8_t set_temp(uint8_t ref, uint8_t temp)
 {
-	OCR2B = 0xFF * ((float)percent/100.0);
+	static int error[3] = {0};
+	static uint8_t pwm = 0;
+	error[2] = error[1];
+	error[1] = error[0];
+	error[0] = ref - temp;
+	pwm = pwm + A0*error[0] + A1*error[1] + A2*error[2];
+	
+	OCR2B = pwm;
+	return ref-temp;
 }
 
-/** Go to power down sleep mode
+void set_led(int8_t state)
+{
+	/* - for cooling, + for heating, 0 for ok */
+}
+/**
+ * Go to power down sleep mode
  * Disables the PCINT23 interrupt that shares the same interrupt vector as
  * the on/off switches interrupt.
  */
@@ -102,8 +155,6 @@ void power_down()
 }
 
 /* TODO: ISR For console */
-/* TODO: ISR For potentiometer ADC conversion done */
-/* TODO: ISR For heating element ADC conversion done */
 
 
 /** ISR for the switches in PCINT22/23 pins 
