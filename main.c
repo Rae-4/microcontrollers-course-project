@@ -12,13 +12,18 @@
 #include <avr/sleep.h>
 
 
+#define PRESCALE_0 (1<<CS20)
+#define PRESCALE_64 (1<<CS22)
+#define PRESCALE_1024 (1<<CS22) | (1<<CS21) | (1<<CS20)
+
+
 volatile uint8_t switch_power_off = 0;
 volatile uint8_t switch_temp_ext = 0;
 
 void setup();
 void power_down();
 void wake_up();
-
+void set_temp(uint8_t percent);
 
 int main(void)
 {
@@ -44,15 +49,27 @@ int main(void)
 void setup()
 {	
 	/* Power saving setup */
-	PRR |= (1<<PRTWI);	/* Shut down TWI */
-	PRR |= (1<<PRTIM2); /* Shut down Timer/Counter2 */
-	PRR |= (1<<PRTIM1); /* Shut down Timer/Counter1 */
-	PRR |= (1<<PRTIM0); /* Shut down Timer/Counter0 */
+	PRR |= (1<<PRTWI);		/* Shut down TWI */
+	PRR |= (1<<PRTIM2);		/* Shut down Timer/Counter2 */
+	PRR |= (1<<PRTIM1);		/* Shut down Timer/Counter1 */
+	PRR |= (1<<PRTIM0);		/* Shut down Timer/Counter0 */
 	
-	/* External interrupt setup */
+	/* External interrupt for switches setup */
 	sei();
 	PCICR |= (1<<PCIE2);					/* Enable PCINT2 interrupt vector */
 	PCMSK2 |= (1<<PCINT23) | (1<<PCINT22);	/* Enable interrupt for the pins */
+	
+	/* Timer/Counter0 PWM setup */
+	DDRD |= (1<<PIND3);								/* Set PD3/OC2B pin as an output */
+	TCCR2A |= (1<<COM2B1) | (1<<WGM20);				/* Set output modes */
+	TCCR2B |= PRESCALE_0;	/* Set 1024 prescaler (1<<CS22) | (1<<CS21) | */
+	set_temp(50);
+}
+
+/** Set the reference temperature for the heating element as 0-100% */
+void set_temp(uint8_t percent)
+{
+	OCR2B = 0xFF * ((float)percent/100.0);
 }
 
 /** Go to power down sleep mode
